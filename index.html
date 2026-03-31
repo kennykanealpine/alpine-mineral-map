@@ -2058,14 +2058,14 @@ map.fitBounds([[31.0822,-102.5868],[32.0869,-101.1985]],{padding:[20,20]});
 const SUPABASE_URL = 'https://nvrgfohruchahzjcsefa.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_5RaIR2U5qU9Nt5w4tGQD2g_tIN2PM_S';
 
-let supabase = null;
+let sbClient = null;
 let allDocuments = [];
 let uploadedFilePath = null;
 let uploadedFileName = null;
 let uploadedFileSize = 0;
 
 try {
-  supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  sbClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
   console.log('Supabase client initialized');
 } catch(err) {
   console.error('Supabase init failed:', err);
@@ -2073,9 +2073,9 @@ try {
 
 // ===== AUTHENTICATION =====
 async function checkAuth(){
-  if(!supabase) return;
+  if(!sbClient) return;
   try {
-    const {data:{session}} = await supabase.auth.getSession();
+    const {data:{session}} = await sbClient.auth.getSession();
     if(session){
       showApp(session.user);
     }
@@ -2110,7 +2110,7 @@ async function handleLogin(e){
   errorEl.textContent = '';
 
   try {
-    const {data, error} = await supabase.auth.signInWithPassword({email, password});
+    const {data, error} = await sbClient.auth.signInWithPassword({email, password});
     if(error) throw error;
     showApp(data.user);
   } catch(err){
@@ -2121,8 +2121,8 @@ async function handleLogin(e){
 }
 
 async function handleSignOut(){
-  if(!supabase) return;
-  await supabase.auth.signOut();
+  if(!sbClient) return;
+  await sbClient.auth.signOut();
   document.getElementById('app-container').style.display = 'none';
   document.getElementById('login-gate').classList.remove('hidden');
   document.getElementById('login-password').value = '';
@@ -2132,8 +2132,8 @@ async function handleSignOut(){
 }
 
 // Listen for auth state changes (handles tab focus, token refresh, etc.)
-if(supabase){
-  supabase.auth.onAuthStateChange((event, session)=>{
+if(sbClient){
+  sbClient.auth.onAuthStateChange((event, session)=>{
     if(event === 'SIGNED_IN' && session) showApp(session.user);
     if(event === 'SIGNED_OUT'){
       document.getElementById('app-container').style.display = 'none';
@@ -2160,9 +2160,9 @@ function toggleDocPanel(){
 }
 
 async function loadDocuments(){
-  if(!supabase) return;
+  if(!sbClient) return;
   try {
-    const {data, error} = await supabase
+    const {data, error} = await sbClient
       .from('instruments')
       .select('*')
       .order('created_at', {ascending: false});
@@ -2247,7 +2247,7 @@ async function openPdf(id){
   const doc = allDocuments.find(d => d.id === id);
   if(!doc || !doc.file_path) return;
   // Use signed URL (private bucket — requires auth)
-  const {data, error} = await supabase.storage
+  const {data, error} = await sbClient.storage
     .from('instruments')
     .createSignedUrl(doc.file_path, 3600); // 1 hour expiry
   if(data?.signedUrl) window.open(data.signedUrl, '_blank');
@@ -2260,10 +2260,10 @@ async function deleteDocument(id){
   try {
     // Delete file from storage if it exists
     if(doc && doc.file_path){
-      await supabase.storage.from('instruments').remove([doc.file_path]);
+      await sbClient.storage.from('instruments').remove([doc.file_path]);
     }
     // Delete database record
-    const {error} = await supabase.from('instruments').delete().eq('id', id);
+    const {error} = await sbClient.from('instruments').delete().eq('id', id);
     if(error) throw error;
     await loadDocuments();
   } catch(err){
@@ -2294,7 +2294,7 @@ function cancelUpload(){
   document.getElementById('upload-overlay').classList.add('hide');
   // If file was uploaded but record not saved, clean up
   if(uploadedFilePath){
-    supabase.storage.from('instruments').remove([uploadedFilePath]).catch(()=>{});
+    sbClient.storage.from('instruments').remove([uploadedFilePath]).catch(()=>{});
   }
   uploadedFilePath = null;
 }
@@ -2317,7 +2317,7 @@ function handleFileSelect(e){
 }
 
 async function uploadFile(file){
-  if(!supabase){ alert('Supabase not connected. Check your configuration.'); return; }
+  if(!sbClient){ alert('Supabase not connected. Check your configuration.'); return; }
 
   const progressEl = document.getElementById('upload-progress');
   const barFill = document.getElementById('upload-bar-fill');
@@ -2334,7 +2334,7 @@ async function uploadFile(file){
 
   try {
     barFill.style.width = '50%';
-    const {data, error} = await supabase.storage
+    const {data, error} = await sbClient.storage
       .from('instruments')
       .upload(path, file, {
         contentType: 'application/pdf',
@@ -2368,7 +2368,7 @@ async function uploadFile(file){
 }
 
 async function saveDocument(){
-  if(!supabase || !uploadedFilePath){ alert('No file uploaded yet.'); return; }
+  if(!sbClient || !uploadedFilePath){ alert('No file uploaded yet.'); return; }
 
   const record = {
     title:             document.getElementById('doc-title').value.trim() || 'Untitled',
@@ -2391,7 +2391,7 @@ async function saveDocument(){
   };
 
   try {
-    const {error} = await supabase.from('instruments').insert([record]);
+    const {error} = await sbClient.from('instruments').insert([record]);
     if(error) throw error;
 
     uploadedFilePath = null; // prevent cleanup on cancel
