@@ -733,9 +733,11 @@ let editId = null;
 let pendingLL = null;
 let pendingBounds = null;
 
-// ── Rectangle draw state ──
-let drawStart = null;
-let drawRect  = null;
+// ── Polygon draw state ──
+let drawVerts = [];   // vertices being placed by click
+let drawPoly  = null; // live preview polygon on map
+let drawStart = null; // (legacy rect compat)
+let drawRect  = null; // (legacy)
 let tableOpen = true;
 let useSatellite = true;
 
@@ -885,60 +887,78 @@ map.on('mousemove', e=>{
   document.getElementById('coords-bar').innerHTML =
     `LAT ${e.latlng.lat.toFixed(5)} &nbsp; LON ${e.latlng.lng.toFixed(5)}`;
 
-  // Live-update the preview rectangle while dragging
-  if(placing && drawStart){
-    const bounds = L.latLngBounds(drawStart, e.latlng);
-    if(drawRect) drawRect.setBounds(bounds);
+  // Live-update the polygon preview while placing vertices
+  if(placing && drawVerts.length > 0){
+    // Update the preview polygon to include the cursor position
+    const previewCoords = [...drawVerts.map(v=>[v.lat,v.lng]), [e.latlng.lat, e.latlng.lng]];
+    if(drawPoly) drawPoly.setLatLngs(previewCoords);
   }
 });
 
-// ── mousedown: start drawing ──
-map.on('mousedown', e=>{
+// ── click: place polygon vertex ──
+map.on('click', e=>{
   if(!placing) return;
-  map.dragging.disable();
-  drawStart = e.latlng;
 
-  // Preview rectangle
-  drawRect = L.rectangle([e.latlng, e.latlng], {
-    color:'#FF1493', weight:2, dashArray:'6 3',
-    fill:true, fillColor:'#FF1493', fillOpacity:0.15, interactive:false
+  drawVerts.push(e.latlng);
+
+  if(!drawPoly){
+    // Start the preview polygon
+    drawPoly = L.polygon([[e.latlng.lat,e.latlng.lng]], {
+      color:'#FF1493', weight:2, dashArray:'6 3',
+      fill:true, fillColor:'#FF1493', fillOpacity:0.15, interactive:false
+    }).addTo(map);
+  }
+
+  // Add a vertex marker
+  L.circleMarker(e.latlng, {
+    radius:5, color:'#FF1493', fillColor:'#fff', fillOpacity:1, weight:2,
+    className:'draw-vert-marker'
   }).addTo(map);
 });
 
-// ── mouseup: place a correctly-sized tract rectangle centered on click ──
-map.on('mouseup', e=>{
-  if(!placing || !drawStart) return;
-  map.dragging.enable();
+// ── dblclick: finish polygon drawing ──
+map.on('dblclick', e=>{
+  if(!placing || drawVerts.length < 3) return;
+  L.DomEvent.stopPropagation(e);
+  L.DomEvent.preventDefault(e);
+  finishPolygonDraw();
+});
 
-  const sw = L.latLngBounds(drawStart, e.latlng).getSouthWest();
-  const ne = L.latLngBounds(drawStart, e.latlng).getNorthEast();
-  const wasDrag = Math.abs(ne.lat - sw.lat) > 0.001 && Math.abs(ne.lng - sw.lng) > 0.001;
+function finishPolygonDraw(){
+  // Build coords from placed vertices
+  const coords = drawVerts.map(v => [v.lat, v.lng]);
+  const ctr = coordsCenter(coords);
+  const bbox = coordsBBox(coords);
 
-  if(wasDrag){
-    // User explicitly dragged — use their box
-    pendingBounds = [[sw.lat, sw.lng],[ne.lat, ne.lng]];
-    pendingLL = { lat:(sw.lat+ne.lat)/2, lng:(sw.lng+ne.lng)/2 };
-  } else {
-    // Single click — place a default quarter-section box centered on click
-    // (will be resized automatically when user enters legal description)
-    const clat = drawStart.lat, clng = drawStart.lng;
-    const halfLat = SEC_LAT / 4;  // quarter section height
-    const halfLng = SEC_LNG / 4;  // quarter section width
-    pendingBounds = [[clat - halfLat, clng - halfLng],[clat + halfLat, clng + halfLng]];
-    pendingLL = { lat: clat, lng: clng };
-  }
+  pendingBounds = bbox;
+  pendingLL = { lat: ctr[0], lng: ctr[1] };
 
-  drawStart = null;
-  if(drawRect){ map.removeLayer(drawRect); drawRect = null; }
+  // Store the actual polygon coords for the new interest
+  window._pendingCoords = coords;
 
-  // Show placeholder rect while modal is open
-  _previewRect = L.rectangle(pendingBounds, {
+  // Clean up draw state
+  drawVerts = [];
+  if(drawPoly){ map.removeLayer(drawPoly); drawPoly = null; }
+  // Remove vertex markers
+  map.eachLayer(l=>{ if(l.options && l.options.className === 'draw-vert-marker') map.removeLayer(l); });
+
+  // Show preview polygon while modal is open
+  _previewRect = L.polygon(coords, {
     color:'#FF1493', weight:2, dashArray:'5 3',
     fill:true, fillColor:'#FF1493', fillOpacity:0.15
   }).addTo(map);
-  map.fitBounds(pendingBounds, {padding:[80,80], maxZoom:15, animate:false});
+  map.fitBounds(L.polygon(coords).getBounds(), {padding:[80,80], maxZoom:15, animate:false});
 
   openModal(null);
+}
+
+// Escape key cancels polygon drawing
+document.addEventListener('keydown', e=>{
+  if(e.key === 'Escape' && placing && drawVerts.length > 0){
+    drawVerts = [];
+    if(drawPoly){ map.removeLayer(drawPoly); drawPoly = null; }
+    map.eachLayer(l=>{ if(l.options && l.options.className === 'draw-vert-marker') map.removeLayer(l); });
+  }
 });
 
 // ===== BASEMAP TOGGLE =====
@@ -1092,20 +1112,27 @@ function saveInterest(){
     const i = interests.find(x=>x.id===editId);
     // Re-parse bounds if desc changed
     const parsed = parseLegalToBounds(desc, i.county);
-    const bounds = parsed ? parsed.bounds : i.bounds || null;
-    const county = parsed ? parsed.county : i.county;
-    Object.assign(i,{entityId,type,pct,date,desc,notes,bounds,county});
-    // Update lat/lng to center of bounds if available
-    if(bounds){ i.lat=(bounds[0][0]+bounds[1][0])/2; i.lng=(bounds[0][1]+bounds[1][1])/2; }
+    if(parsed){
+      const bounds = parsed.bounds;
+      i.bounds = bounds;
+      i.coords = boundsToCoords(bounds);
+      i.county = parsed.county;
+      const ctr = coordsCenter(i.coords);
+      i.lat = ctr[0]; i.lng = ctr[1];
+    }
+    Object.assign(i,{entityId,type,pct,date,desc,notes});
   } else {
-    const bounds  = _parsedBoundsFromDesc || pendingBounds || null;
+    // Use polygon coords if drawn, otherwise fall back to parsed/pending bounds
+    let coords = window._pendingCoords || null;
+    let bounds = _parsedBoundsFromDesc || pendingBounds || null;
+    if(!coords && bounds) coords = boundsToCoords(bounds);
     const county  = _parsedCountyFromDesc || (pendingLL ? getCounty(pendingLL) : 'Unknown');
-    const lat = bounds ? (bounds[0][0]+bounds[1][0])/2 : (pendingLL?.lat||0);
-    const lng = bounds ? (bounds[0][1]+bounds[1][1])/2 : (pendingLL?.lng||0);
+    const ctr = coords ? coordsCenter(coords) : [pendingLL?.lat||0, pendingLL?.lng||0];
     interests.push({
       id:'i'+Date.now(), entityId, type, pct, date, desc, notes,
-      county, lat, lng, bounds
+      county, lat:ctr[0], lng:ctr[1], bounds, coords
     });
+    window._pendingCoords = null;
   }
   _parsedBoundsFromDesc = null;
   _parsedCountyFromDesc = null;
@@ -1336,7 +1363,7 @@ function onDescInput(val){
     // Full match — precise bounds from survey grid
     _parsedBoundsFromDesc = result.bounds;
     _parsedCountyFromDesc = result.county;
-    _previewRect = L.rectangle(result.bounds,{
+    _previewRect = L.polygon(boundsToCoords(result.bounds),{
       color:'#FF1493', weight:2.5, dashArray:'4 3',
       fill:true, fillColor:'#FF1493', fillOpacity:0.18
     }).addTo(map);
@@ -1355,7 +1382,7 @@ function onDescInput(val){
       const bounds = [[clat-halfLat, clng-halfLng],[clat+halfLat, clng+halfLng]];
       _parsedBoundsFromDesc = bounds;
       _parsedCountyFromDesc = null;
-      _previewRect = L.rectangle(bounds,{
+      _previewRect = L.polygon(boundsToCoords(bounds),{
         color:'#FF1493', weight:2, dashArray:'5 3',
         fill:true, fillColor:'#FF1493', fillOpacity:0.15
       }).addTo(map);
@@ -1377,17 +1404,45 @@ function getCounty(ll){
   return 'Outside Area';
 }
 
-// ===== INTERACTIVE TRACT RECTANGLES =====
+// ===== INTERACTIVE TRACT POLYGONS =====
 const tractLayer = L.layerGroup().addTo(map);
 const editHandleLayer = L.layerGroup().addTo(map);
 let activeEditId = null; // which interest is being boundary-edited
+
+// Convert old bounds [[s,w],[n,e]] to polygon coords [[lat,lng],...]
+function boundsToCoords(bounds){
+  const [[s,w],[n,e]] = bounds;
+  return [[s,w],[s,e],[n,e],[n,w]]; // SW, SE, NE, NW
+}
+
+// Get center of polygon coords
+function coordsCenter(coords){
+  let latSum=0, lngSum=0;
+  coords.forEach(c=>{ latSum+=c[0]; lngSum+=c[1]; });
+  return [latSum/coords.length, lngSum/coords.length];
+}
+
+// Get bounding box of coords as [[s,w],[n,e]]
+function coordsBBox(coords){
+  let s=90,n=-90,w=180,e=-180;
+  coords.forEach(c=>{ s=Math.min(s,c[0]); n=Math.max(n,c[0]); w=Math.min(w,c[1]); e=Math.max(e,c[1]); });
+  return [[s,w],[n,e]];
+}
+
+// Ensure an interest has coords (migrate from bounds if needed)
+function ensureCoords(i){
+  if(!i.coords && i.bounds) i.coords = boundsToCoords(i.bounds);
+  return i.coords;
+}
 
 function buildPopupHTML(i){
   const color = getEntityColor(i.entityId);
   const name  = getEntityName(i.entityId);
   const isUnassigned = i.entityId==='UNASSIGNED';
   const displayName = i.imported && isUnassigned ? (i.label||'Imported') : name;
-  const [[s,w],[n,e]] = i.bounds;
+  const coords = ensureCoords(i);
+  const [[s,w],[n,e]] = coords ? coordsBBox(coords) : [[0,0],[0,0]];
+  const nVerts = coords ? coords.length : 0;
 
   return `
     <div class="p-title" style="color:${color}">${displayName}</div>
@@ -1400,10 +1455,11 @@ function buildPopupHTML(i){
     ${i.notes?`<div class="p-row"><span class="p-lbl">Notes</span><span class="p-val" style="max-width:180px;white-space:normal;text-align:right;font-size:0.65rem">${i.notes}</span></div>`:''}
     <div class="p-bounds">
       <b>SW:</b> ${s.toFixed(6)}, ${w.toFixed(6)}<br>
-      <b>NE:</b> ${n.toFixed(6)}, ${e.toFixed(6)}
+      <b>NE:</b> ${n.toFixed(6)}, ${e.toFixed(6)}<br>
+      <span style="color:var(--text-dim);font-size:0.6rem">${nVerts} vertices</span>
     </div>
     <div class="p-acts">
-      <button class="btn btn-sm btn-primary" onclick="startBoundsEdit('${i.id}')" title="Drag corners to reposition">⊞ Adjust Bounds</button>
+      <button class="btn btn-sm btn-primary" onclick="startBoundsEdit('${i.id}')" title="Drag vertices to reshape">⊞ Adjust Shape</button>
       <button class="btn btn-sm" onclick="editInterest('${i.id}')">Edit</button>
       <button class="btn btn-sm btn-danger" onclick="deleteInterest('${i.id}')">Del</button>
     </div>`;
@@ -1416,14 +1472,15 @@ function renderMarkers(){
   if(!activeEditId) editHandleLayer.clearLayers();
 
   interests.forEach(i=>{
-    if(!i.bounds) return;
+    const coords = ensureCoords(i);
+    if(!coords || coords.length < 3) return;
 
     const isUnassigned = i.entityId==='UNASSIGNED';
     const isEditing = i.id === activeEditId;
     const pink = '#FF1493';
 
-    // High-contrast pink rectangle
-    const rect = L.rectangle(i.bounds, {
+    // High-contrast pink polygon
+    const poly = L.polygon(coords, {
       color: isEditing ? '#FCD34D' : pink,
       weight: isEditing ? 3 : 2.5,
       opacity: 1.0,
@@ -1433,13 +1490,12 @@ function renderMarkers(){
       dashArray: isEditing ? '6 3' : null,
       className: ''
     });
-    rect._interestId = i.id;
-    rect.bindPopup(()=> buildPopupHTML(i), {maxWidth:320});
-    tractLayer.addLayer(rect);
+    poly._interestId = i.id;
+    poly.bindPopup(()=> buildPopupHTML(i), {maxWidth:320});
+    tractLayer.addLayer(poly);
 
     // Small text label centered on the tract
-    const [[s,w],[n,e]] = i.bounds;
-    const clat = (s+n)/2, clng = (w+e)/2;
+    const [clat, clng] = coordsCenter(coords);
     const lbl = L.divIcon({
       className:'',
       html:`<div style="
@@ -1490,106 +1546,113 @@ function stopBoundsEdit(rerender=true){
 function buildEditHandles(id){
   editHandleLayer.clearLayers();
   const interest = interests.find(x=>x.id===id);
-  if(!interest || !interest.bounds) return;
+  const coords = ensureCoords(interest);
+  if(!coords || coords.length < 3) return;
 
-  const [[s,w],[n,e]] = interest.bounds;
-  const clat = (s+n)/2, clng = (w+e)/2;
-
-  // Corner handles: SW, SE, NE, NW
-  const corners = [
-    {pos:'sw', lat:s, lng:w}, {pos:'se', lat:s, lng:e},
-    {pos:'ne', lat:n, lng:e}, {pos:'nw', lat:n, lng:w}
-  ];
-  // Edge midpoint handles: S, E, N, W
-  const edges = [
-    {pos:'s', lat:s, lng:clng}, {pos:'e', lat:clat, lng:e},
-    {pos:'n', lat:n, lng:clng}, {pos:'w', lat:clat, lng:w}
-  ];
-
-  corners.forEach(c=>{
-    const m = L.marker([c.lat, c.lng], {
+  // Vertex handles — drag to move individual vertices
+  coords.forEach((c, idx)=>{
+    const m = L.marker([c[0], c[1]], {
       icon: L.divIcon({className:'edit-handle'}),
       draggable: true, zIndexOffset: 2000
     });
-    m.on('drag', ()=> onCornerDrag(id, c.pos, m.getLatLng()));
+    m.on('drag', ()=>{
+      const ll = m.getLatLng();
+      coords[idx] = [ll.lat, ll.lng];
+      interest.coords = coords;
+      const ctr = coordsCenter(coords);
+      interest.lat = ctr[0]; interest.lng = ctr[1];
+      interest.bounds = coordsBBox(coords);
+      updateEditPoly(id);
+    });
     m.on('dragend', ()=> onDragEnd(id));
+    // Right-click to delete a vertex (keep at least 3)
+    m.on('contextmenu', (e)=>{
+      L.DomEvent.preventDefault(e);
+      if(coords.length <= 3) return;
+      coords.splice(idx, 1);
+      interest.coords = coords;
+      const ctr = coordsCenter(coords);
+      interest.lat = ctr[0]; interest.lng = ctr[1];
+      interest.bounds = coordsBBox(coords);
+      updateEditPoly(id);
+      buildEditHandles(id);
+    });
     editHandleLayer.addLayer(m);
   });
 
-  edges.forEach(c=>{
-    const m = L.marker([c.lat, c.lng], {
+  // Midpoint handles — click or drag to insert a new vertex
+  for(let idx = 0; idx < coords.length; idx++){
+    const next = (idx + 1) % coords.length;
+    const midLat = (coords[idx][0] + coords[next][0]) / 2;
+    const midLng = (coords[idx][1] + coords[next][1]) / 2;
+    const m = L.marker([midLat, midLng], {
       icon: L.divIcon({className:'edit-handle-mid'}),
       draggable: true, zIndexOffset: 1900
     });
-    m.on('drag', ()=> onEdgeDrag(id, c.pos, m.getLatLng()));
-    m.on('dragend', ()=> onDragEnd(id));
+    m._midIdx = idx;
+    m.on('dragstart', ()=>{
+      // Insert new vertex at this midpoint
+      const insertAt = m._midIdx + 1;
+      coords.splice(insertAt, 0, [midLat, midLng]);
+      interest.coords = coords;
+      // Convert this midpoint handle into a vertex drag
+      m._isPromoted = true;
+      m._vertIdx = insertAt;
+    });
+    m.on('drag', ()=>{
+      if(!m._isPromoted) return;
+      const ll = m.getLatLng();
+      coords[m._vertIdx] = [ll.lat, ll.lng];
+      interest.coords = coords;
+      const ctr = coordsCenter(coords);
+      interest.lat = ctr[0]; interest.lng = ctr[1];
+      interest.bounds = coordsBBox(coords);
+      updateEditPoly(id);
+    });
+    m.on('dragend', ()=>{
+      onDragEnd(id);
+      buildEditHandles(id); // rebuild all handles with new vertex count
+    });
     editHandleLayer.addLayer(m);
-  });
+  }
 
   // Center move handle
-  const moveM = L.marker([clat, clng], {
+  const ctr = coordsCenter(coords);
+  const moveM = L.marker(ctr, {
     icon: L.divIcon({className:'edit-handle-move'}),
     draggable: true, zIndexOffset: 2100
   });
   let moveStart = null;
+  let origCoords = null;
   moveM.on('dragstart', ()=>{
-    const i = interests.find(x=>x.id===id);
-    const [[ss,ww],[nn,ee]] = i.bounds;
-    moveStart = { lat:(ss+nn)/2, lng:(ww+ee)/2 };
+    moveStart = coordsCenter(coords);
+    origCoords = coords.map(c => [...c]);
   });
   moveM.on('drag', ()=>{
     if(!moveStart) return;
     const ll = moveM.getLatLng();
-    const dlat = ll.lat - moveStart.lat;
-    const dlng = ll.lng - moveStart.lng;
-    const i = interests.find(x=>x.id===id);
-    const [[ss,ww],[nn,ee]] = i.bounds;
-    const h = (nn-ss)/2, w2 = (ee-ww)/2;
-    const cLat = moveStart.lat + dlat, cLng = moveStart.lng + dlng;
-    i.bounds = [[cLat-h, cLng-w2],[cLat+h, cLng+w2]];
-    i.lat = cLat; i.lng = cLng;
-    updateEditRect(id);
+    const dlat = ll.lat - moveStart[0];
+    const dlng = ll.lng - moveStart[1];
+    for(let j = 0; j < coords.length; j++){
+      coords[j] = [origCoords[j][0] + dlat, origCoords[j][1] + dlng];
+    }
+    interest.coords = coords;
+    const nc = coordsCenter(coords);
+    interest.lat = nc[0]; interest.lng = nc[1];
+    interest.bounds = coordsBBox(coords);
+    updateEditPoly(id);
   });
-  moveM.on('dragend', ()=>{ moveStart=null; onDragEnd(id); });
+  moveM.on('dragend', ()=>{ moveStart=null; origCoords=null; onDragEnd(id); });
   editHandleLayer.addLayer(moveM);
 }
 
-function onCornerDrag(id, pos, ll){
+// Live-update the polygon on the map while dragging
+function updateEditPoly(id){
   const i = interests.find(x=>x.id===id);
-  let [[s,w],[n,e]] = i.bounds;
-  if(pos==='sw'){ s=ll.lat; w=ll.lng; }
-  if(pos==='se'){ s=ll.lat; e=ll.lng; }
-  if(pos==='ne'){ n=ll.lat; e=ll.lng; }
-  if(pos==='nw'){ n=ll.lat; w=ll.lng; }
-  // Enforce min size
-  if(n-s < 0.0005){ n = s + 0.0005; }
-  if(e-w < 0.0005){ e = w + 0.0005; }
-  i.bounds = [[s,w],[n,e]];
-  i.lat = (s+n)/2; i.lng = (w+e)/2;
-  updateEditRect(id);
-}
-
-function onEdgeDrag(id, pos, ll){
-  const i = interests.find(x=>x.id===id);
-  let [[s,w],[n,e]] = i.bounds;
-  if(pos==='s') s = ll.lat;
-  if(pos==='n') n = ll.lat;
-  if(pos==='w') w = ll.lng;
-  if(pos==='e') e = ll.lng;
-  if(n-s < 0.0005) n = s + 0.0005;
-  if(e-w < 0.0005) e = w + 0.0005;
-  i.bounds = [[s,w],[n,e]];
-  i.lat = (s+n)/2; i.lng = (w+e)/2;
-  updateEditRect(id);
-}
-
-// Live-update the rectangle on the map while dragging (without full re-render)
-function updateEditRect(id){
-  const i = interests.find(x=>x.id===id);
-  if(!i) return;
+  if(!i || !i.coords) return;
   tractLayer.eachLayer(layer=>{
-    if(layer._interestId === id && layer.setBounds){
-      layer.setBounds(i.bounds);
+    if(layer._interestId === id && layer.setLatLngs){
+      layer.setLatLngs(i.coords);
     }
   });
 }
@@ -1603,10 +1666,11 @@ function onDragEnd(id){
   renderInterestList();
   renderTable();
   renderCounts();
-  // Update banner with new coords
+  // Update banner with vertex count and bbox
   if(_editBanner){
-    const [[s,w],[n,e]] = i.bounds;
-    _editBanner.textContent = `⊞ SW: ${s.toFixed(5)},${w.toFixed(5)}  NE: ${n.toFixed(5)},${e.toFixed(5)}  ·  ${i.desc||i.label||id}`;
+    const coords = i.coords || [];
+    const [[s,w],[n,e]] = i.bounds || coordsBBox(coords);
+    _editBanner.textContent = `⊞ ${coords.length} vertices  ·  SW: ${s.toFixed(5)},${w.toFixed(5)}  NE: ${n.toFixed(5)},${e.toFixed(5)}  ·  ${i.desc||i.label||id}`;
   }
 }
 
@@ -1631,7 +1695,7 @@ function sortedInterests(){
 function renderInterestList(){
   const el = document.getElementById('i-scroll');
   if(!interests.length){
-    el.innerHTML=`<div class="empty">Select an entity, click<br><strong style="color:var(--amber)">📍 Add Interest</strong><br>then drag a box on the map<br>to define the tract boundary.</div>`;
+    el.innerHTML=`<div class="empty">Select an entity, click<br><strong style="color:var(--amber)">📍 Add Interest</strong><br>then click points on the map<br>to draw the tract boundary.<br><span style="color:var(--text-dim);font-size:0.7rem">Double-click to finish shape.</span></div>`;
     return;
   }
   el.innerHTML = sortedInterests().map(i=>{
@@ -1691,6 +1755,17 @@ function toggleMode(){
   map.getContainer().style.cursor = placing?'crosshair':'';
   btn.textContent = placing ? '✕ Cancel Placing' : '📍 Add Interest';
   btn.classList.toggle('btn-active',placing);
+
+  // Disable dblclick zoom when drawing polygons, restore when done
+  if(placing){
+    map.doubleClickZoom.disable();
+  } else {
+    map.doubleClickZoom.enable();
+    // Clean up any in-progress polygon drawing
+    drawVerts = [];
+    if(drawPoly){ map.removeLayer(drawPoly); drawPoly = null; }
+    map.eachLayer(l=>{ if(l.options && l.options.className === 'draw-vert-marker') map.removeLayer(l); });
+  }
 }
 
 // ===== EXPORT =====
@@ -2424,6 +2499,7 @@ function addInstrumentToMap(doc){
     lat: lat,
     lng: lng,
     bounds: finalBounds,
+    coords: finalBounds ? boundsToCoords(finalBounds) : null,
     imported: true,
     label: doc.title
   });
