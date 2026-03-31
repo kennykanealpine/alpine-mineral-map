@@ -616,11 +616,12 @@ td:first-child{font-family:'IBM Plex Sans',sans-serif;}
     <div class="upload-zone" id="upload-zone" onclick="document.getElementById('file-input').click()">
       <div class="upload-zone-icon">📄</div>
       <div class="upload-zone-text">
-        <strong>Click to select</strong> or drag & drop a PDF<br>
-        Deed, Assignment, OGL, Lease, Lien, Release, etc.
+        <strong>Click to select</strong> or drag & drop PDFs<br>
+        Select one or multiple — Deeds, Assignments, OGLs, Leases, etc.
       </div>
-      <input type="file" id="file-input" accept=".pdf" style="display:none" onchange="handleFileSelect(event)">
+      <input type="file" id="file-input" accept=".pdf" multiple style="display:none" onchange="handleFileSelect(event)">
     </div>
+    <div id="batch-progress" style="display:none;max-height:260px;overflow-y:auto;margin-top:8px;"></div>
     <div class="upload-progress" id="upload-progress">
       <div class="upload-bar"><div class="upload-bar-fill" id="upload-bar-fill"></div></div>
       <div class="upload-status" id="upload-status">Uploading...</div>
@@ -899,8 +900,8 @@ map.on('mousedown', e=>{
 
   // Preview rectangle
   drawRect = L.rectangle([e.latlng, e.latlng], {
-    color:'#F59E0B', weight:2, dashArray:'6 3',
-    fill:true, fillColor:'#F59E0B', fillOpacity:0.12, interactive:false
+    color:'#FF1493', weight:2, dashArray:'6 3',
+    fill:true, fillColor:'#FF1493', fillOpacity:0.15, interactive:false
   }).addTo(map);
 });
 
@@ -932,8 +933,8 @@ map.on('mouseup', e=>{
 
   // Show placeholder rect while modal is open
   _previewRect = L.rectangle(pendingBounds, {
-    color:'#F59E0B', weight:2, dashArray:'5 3',
-    fill:true, fillColor:'#F59E0B', fillOpacity:0.12
+    color:'#FF1493', weight:2, dashArray:'5 3',
+    fill:true, fillColor:'#FF1493', fillOpacity:0.15
   }).addTo(map);
   map.fitBounds(pendingBounds, {padding:[80,80], maxZoom:15, animate:false});
 
@@ -1402,8 +1403,8 @@ function onDescInput(val){
     _parsedBoundsFromDesc = result.bounds;
     _parsedCountyFromDesc = result.county;
     _previewRect = L.rectangle(result.bounds,{
-      color:'#10B981', weight:2.5, dashArray:'4 3',
-      fill:true, fillColor:'#10B981', fillOpacity:0.15
+      color:'#FF1493', weight:2.5, dashArray:'4 3',
+      fill:true, fillColor:'#FF1493', fillOpacity:0.18
     }).addTo(map);
     map.fitBounds(result.bounds,{padding:[80,80],maxZoom:15,animate:true});
     resultEl.style.cssText='display:block;margin-top:5px;font-size:0.67rem;font-family:IBM Plex Mono,monospace;padding:4px 8px;border-radius:4px;background:rgba(16,185,129,0.12);border:1px solid rgba(16,185,129,0.3);color:#6EE7B7;';
@@ -1421,8 +1422,8 @@ function onDescInput(val){
       _parsedBoundsFromDesc = bounds;
       _parsedCountyFromDesc = null;
       _previewRect = L.rectangle(bounds,{
-        color:'#F59E0B', weight:2, dashArray:'5 3',
-        fill:true, fillColor:'#F59E0B', fillOpacity:0.12
+        color:'#FF1493', weight:2, dashArray:'5 3',
+        fill:true, fillColor:'#FF1493', fillOpacity:0.15
       }).addTo(map);
       map.fitBounds(bounds,{padding:[80,80],maxZoom:15,animate:true});
       resultEl.style.cssText='display:block;margin-top:5px;font-size:0.67rem;font-family:IBM Plex Mono,monospace;padding:4px 8px;border-radius:4px;background:rgba(100,116,139,0.1);border:1px solid rgba(100,116,139,0.2);color:var(--text-dim);';
@@ -1483,20 +1484,20 @@ function renderMarkers(){
   interests.forEach(i=>{
     if(!i.bounds) return;
 
-    const color = getEntityColor(i.entityId);
     const isUnassigned = i.entityId==='UNASSIGNED';
     const isEditing = i.id === activeEditId;
+    const pink = '#FF1493';
 
-    // Solid colored rectangle
+    // High-contrast pink rectangle
     const rect = L.rectangle(i.bounds, {
-      color: isEditing ? '#FCD34D' : color,
-      weight: isEditing ? 3 : (isUnassigned ? 2.5 : 2),
-      opacity: isUnassigned ? 0.7 : 1.0,
+      color: isEditing ? '#FCD34D' : pink,
+      weight: isEditing ? 3 : 2.5,
+      opacity: 1.0,
       fill: true,
-      fillColor: isEditing ? '#FCD34D' : color,
-      fillOpacity: isEditing ? 0.08 : (isUnassigned ? 0.12 : 0.18),
-      dashArray: isEditing ? '6 3' : (isUnassigned ? '8 5 2 5' : null),
-      className: isUnassigned ? 'unassigned-tract' : ''
+      fillColor: isEditing ? '#FCD34D' : pink,
+      fillOpacity: isEditing ? 0.10 : 0.22,
+      dashArray: isEditing ? '6 3' : null,
+      className: ''
     });
     rect._interestId = i.id;
     rect.bindPopup(()=> buildPopupHTML(i), {maxWidth:320});
@@ -1508,13 +1509,12 @@ function renderMarkers(){
     const lbl = L.divIcon({
       className:'',
       html:`<div style="
-        background:${color};color:#000;
+        background:${pink};color:#fff;
         font-family:'IBM Plex Mono',monospace;
         font-size:9px;font-weight:700;
         padding:2px 5px;border-radius:3px;
         white-space:nowrap;pointer-events:none;
         box-shadow:0 1px 6px rgba(0,0,0,0.8);
-        opacity:${isUnassigned?0.55:1};
         letter-spacing:0.03em;
       ">${i.type}${i.pct>0?' '+i.pct.toFixed(2)+'%':''}</div>`,
       iconAnchor:[0,6]
@@ -2074,6 +2074,7 @@ function openUploadModal(){
   document.getElementById('upload-meta').style.display = 'none';
   document.getElementById('save-doc-btn').style.display = 'none';
   document.getElementById('upload-progress').style.display = 'none';
+  document.getElementById('batch-progress').style.display = 'none';
   document.getElementById('upload-zone').style.display = '';
 }
 
@@ -2093,14 +2094,17 @@ uploadZone.addEventListener('dragleave', () => { uploadZone.classList.remove('dr
 uploadZone.addEventListener('drop', e => {
   e.preventDefault();
   uploadZone.classList.remove('dragover');
-  const file = e.dataTransfer.files[0];
-  if(file && file.type === 'application/pdf') uploadFile(file);
-  else alert('Please drop a PDF file.');
+  const files = [...e.dataTransfer.files].filter(f => f.type === 'application/pdf');
+  if(files.length === 0){ alert('Please drop PDF file(s).'); return; }
+  if(files.length === 1) uploadFile(files[0]);
+  else uploadBatch(files);
 });
 
 function handleFileSelect(e){
-  const file = e.target.files[0];
-  if(file) uploadFile(file);
+  const files = [...e.target.files].filter(f => f.type === 'application/pdf');
+  if(files.length === 0) return;
+  if(files.length === 1) uploadFile(files[0]);
+  else uploadBatch(files);
 }
 
 // ── Extract text from PDF using pdf.js ──
@@ -2253,6 +2257,117 @@ async function uploadFile(file){
   }
 }
 
+// ── Batch upload: process multiple PDFs automatically ──
+async function uploadBatch(files){
+  if(!sbClient){ alert('Supabase not connected.'); return; }
+
+  // Hide upload zone, show batch progress
+  document.getElementById('upload-zone').style.display = 'none';
+  document.getElementById('upload-meta').style.display = 'none';
+  document.getElementById('upload-progress').style.display = 'none';
+  document.getElementById('parse-progress').style.display = 'none';
+  const batchEl = document.getElementById('batch-progress');
+  batchEl.style.display = 'block';
+  batchEl.innerHTML = '';
+
+  // Create a row for each file
+  const rows = files.map((f, idx) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.06);font-size:0.75rem;';
+    row.innerHTML = `<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);">${f.name}</span><span class="batch-status" style="flex-shrink:0;color:var(--text-dim);font-family:'IBM Plex Mono',monospace;font-size:0.65rem;">Waiting…</span>`;
+    batchEl.appendChild(row);
+    return { file: f, el: row, statusEl: row.querySelector('.batch-status') };
+  });
+
+  // Show a close button at the bottom (hidden until done)
+  const doneBar = document.createElement('div');
+  doneBar.style.cssText = 'margin-top:12px;text-align:center;display:none;';
+  doneBar.innerHTML = `<button class="btn btn-primary" onclick="closeBatchUpload()">Done — Close</button>`;
+  batchEl.appendChild(doneBar);
+
+  let successCount = 0;
+
+  for(const row of rows){
+    row.statusEl.textContent = '⏳ Uploading…';
+    row.statusEl.style.color = '#F59E0B';
+
+    try {
+      // 1) Upload to storage
+      const ts = Date.now();
+      const safeName = row.file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const path = `uploads/${ts}_${safeName}`;
+      const {error: upErr} = await sbClient.storage.from('instruments').upload(path, row.file, { contentType:'application/pdf', upsert:false });
+      if(upErr) throw upErr;
+
+      // 2) Extract text
+      row.statusEl.textContent = '📄 Extracting…';
+      let pdfText = '';
+      try { pdfText = await extractPdfText(row.file); } catch(e){ console.warn('Extract fail:', e); }
+
+      // 3) AI parse
+      let parsed = null;
+      if(pdfText.length > 50){
+        row.statusEl.textContent = '🧠 Parsing…';
+        try { parsed = await parseInstrumentWithAI(pdfText); } catch(e){ console.warn('AI parse fail:', e); }
+      }
+
+      // 4) Build record and save
+      row.statusEl.textContent = '💾 Saving…';
+      const record = {
+        title:             parsed?.title || row.file.name.replace(/\.pdf$/i,'').replace(/[_-]/g,' '),
+        instrument_type:   parsed?.instrument_type || 'Other',
+        instrument_date:   parsed?.instrument_date || null,
+        volume:            parsed?.volume || null,
+        page:              parsed?.page || null,
+        instrument_number: parsed?.instrument_number || null,
+        county:            parsed?.county || null,
+        block:             parsed?.block || null,
+        section:           parsed?.section || null,
+        survey:            parsed?.survey || null,
+        grantor:           parsed?.grantor || null,
+        grantee:           parsed?.grantee || null,
+        notes:             parsed?.notes || null,
+        file_path:         path,
+        file_name:         row.file.name,
+        file_size:         row.file.size,
+      };
+
+      const {data, error} = await sbClient.from('instruments').insert([record]).select();
+      if(error) throw error;
+
+      // Add to map
+      if(data && data[0]){
+        allDocuments.push(data[0]);
+        addInstrumentToMap(data[0]);
+      }
+
+      row.statusEl.textContent = '✓ Done';
+      row.statusEl.style.color = '#10B981';
+      successCount++;
+
+    } catch(err){
+      row.statusEl.textContent = '✕ ' + (err.message || 'Failed');
+      row.statusEl.style.color = '#EF4444';
+      console.error('Batch upload error for', row.file.name, err);
+    }
+  }
+
+  // Finalize
+  renderAll();
+  doneBar.style.display = 'block';
+  doneBar.querySelector('button').textContent = `Done — ${successCount}/${files.length} saved`;
+}
+
+function closeBatchUpload(){
+  document.getElementById('upload-overlay').classList.add('hide');
+  document.getElementById('batch-progress').style.display = 'none';
+  document.getElementById('upload-zone').style.display = '';
+  // Refresh doc panel
+  const panel = document.getElementById('doc-panel');
+  if(!panel.classList.contains('open')) toggleDocPanel();
+  loadDocuments();
+}
+
 async function saveDocument(){
   if(!sbClient || !uploadedFilePath){ alert('No file uploaded yet.'); return; }
 
@@ -2319,19 +2434,25 @@ function addInstrumentToMap(doc){
   const bounds = parsed ? parsed.bounds : null;
   const county = parsed ? parsed.county : (doc.county || 'Unknown');
 
-  // Calculate center from bounds, or skip if we can't place it
+  // Calculate center from bounds, or create fallback bounds at county center
   let lat = 0, lng = 0;
+  let finalBounds = bounds;
   if(bounds){
     lat = (bounds[0][0] + bounds[1][0]) / 2;
     lng = (bounds[0][1] + bounds[1][1]) / 2;
   } else {
-    // Default county centers as fallback
+    // Default county centers as fallback — create a small default rectangle
     const countyCenters = {
       'Midland': [31.87, -102.15], 'Glasscock': [31.87, -101.49],
       'Upton': [31.37, -102.21], 'Reagan': [31.37, -101.56]
     };
     const ctr = countyCenters[doc.county];
-    if(ctr){ lat = ctr[0]; lng = ctr[1]; }
+    if(ctr){
+      lat = ctr[0]; lng = ctr[1];
+      // Quarter-section sized default box (user can edit/resize later)
+      const hLat = 0.0036, hLng = 0.0042;
+      finalBounds = [[lat - hLat, lng - hLng],[lat + hLat, lng + hLng]];
+    }
     else return; // Can't place — no location info at all
   }
 
@@ -2362,7 +2483,7 @@ function addInstrumentToMap(doc){
     county: county,
     lat: lat,
     lng: lng,
-    bounds: bounds,
+    bounds: finalBounds,
     imported: true,
     label: doc.title
   });
