@@ -1955,6 +1955,7 @@ async function loadDocuments(){
     if(error) throw error;
     allDocuments = data || [];
     renderDocList(allDocuments);
+    loadInstrumentsToMap();
   } catch(err) {
     console.error('Failed to load documents:', err);
     document.getElementById('doc-scroll').innerHTML =
@@ -2276,12 +2277,18 @@ async function saveDocument(){
   };
 
   try {
-    const {error} = await sbClient.from('instruments').insert([record]);
+    const {data, error} = await sbClient.from('instruments').insert([record]).select();
     if(error) throw error;
 
     uploadedFilePath = null; // prevent cleanup on cancel
     document.getElementById('upload-overlay').classList.add('hide');
     await loadDocuments();
+
+    // Add to map as an interest
+    if(data && data[0]){
+      addInstrumentToMap(data[0]);
+      renderAll();
+    }
 
     // Flash the doc panel open if not already
     const panel = document.getElementById('doc-panel');
@@ -2291,6 +2298,80 @@ async function saveDocument(){
     alert('Failed to save: ' + err.message);
     console.error('Save error:', err);
   }
+}
+
+// ===== INSTRUMENTS → MAP INTERESTS =====
+function addInstrumentToMap(doc){
+  // Skip if already on the map
+  if(interests.find(i => i.id === 'doc_' + doc.id)) return;
+
+  // Build a legal description string for the parser
+  const legalParts = [];
+  if(doc.subdivision) legalParts.push(doc.subdivision);
+  if(doc.section) legalParts.push('Sec ' + doc.section);
+  if(doc.block) legalParts.push('Blk ' + doc.block);
+  if(doc.survey) legalParts.push(doc.survey + ' Survey');
+  if(doc.county) legalParts.push(doc.county + ' Co.');
+  const legalDesc = legalParts.join(', ') || doc.legal_description || '';
+
+  // Try to parse bounds from the legal description
+  const parsed = legalDesc.length > 5 ? parseLegalToBounds(legalDesc, doc.county) : null;
+  const bounds = parsed ? parsed.bounds : null;
+  const county = parsed ? parsed.county : (doc.county || 'Unknown');
+
+  // Calculate center from bounds, or skip if we can't place it
+  let lat = 0, lng = 0;
+  if(bounds){
+    lat = (bounds[0][0] + bounds[1][0]) / 2;
+    lng = (bounds[0][1] + bounds[1][1]) / 2;
+  } else {
+    // Default county centers as fallback
+    const countyCenters = {
+      'Midland': [31.87, -102.15], 'Glasscock': [31.87, -101.49],
+      'Upton': [31.37, -102.21], 'Reagan': [31.37, -101.56]
+    };
+    const ctr = countyCenters[doc.county];
+    if(ctr){ lat = ctr[0]; lng = ctr[1]; }
+    else return; // Can't place — no location info at all
+  }
+
+  // Find or create entity if linked
+  let entityId = doc.entity_id || null;
+  if(!entityId && doc.grantee){
+    // See if grantee matches an existing entity
+    const match = entities.find(e => e.name.toLowerCase() === doc.grantee.toLowerCase());
+    if(match) entityId = match.id;
+  }
+
+  // Map instrument_type to interest type
+  const typeMap = {
+    'OGL': 'WI', 'Lease': 'WI', 'Assignment': 'WI',
+    'Deed': 'RI', 'Conveyance': 'RI',
+    'Lien': 'NPI', 'Release': 'OVR'
+  };
+  const interestType = doc.interest_type || typeMap[doc.instrument_type] || 'WI';
+
+  interests.push({
+    id: 'doc_' + doc.id,
+    entityId: entityId || 'UNASSIGNED',
+    type: interestType,
+    pct: doc.interest_pct || 0,
+    date: doc.instrument_date || '',
+    desc: legalDesc || doc.title,
+    notes: [doc.title, doc.grantor ? 'From: ' + doc.grantor : '', doc.grantee ? 'To: ' + doc.grantee : '', doc.notes || ''].filter(Boolean).join(' | '),
+    county: county,
+    lat: lat,
+    lng: lng,
+    bounds: bounds,
+    imported: true,
+    label: doc.title
+  });
+}
+
+async function loadInstrumentsToMap(){
+  if(!allDocuments.length) return;
+  allDocuments.forEach(doc => addInstrumentToMap(doc));
+  renderAll();
 }
 
 // ===== LINK DOCS TO INTERESTS (popup enhancement) =====
