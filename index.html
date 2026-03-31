@@ -722,6 +722,7 @@ td:first-child{font-family:'IBM Plex Sans',sans-serif;}
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="rrc_bounds.js"></script>
 <script>
 // ===== STATE =====
 let entities = [];
@@ -823,49 +824,41 @@ let gridVisible = false;
 
 function buildSectionGrid(){
   sectionGridLayer.clearLayers();
-  // Draw grid for CCSD&RGNG Block B (the primary survey with deed data)
-  const grid = SURVEY_GRIDS['ccsd_b_upton'];
-  if(!grid) return;
-  const rows = 8; // show ~8 rows of sections
-  const cols = grid.cols;
-  const oLat = grid.origin[0], oLng = grid.origin[1];
+  if(!window.RRC_BOUNDS) return;
+  // Draw all RRC section outlines for the visible map area
+  // Uses real RRC polygon bounds instead of estimated grids
+  const mapBounds = map.getBounds();
 
-  for(let r=0; r<rows; r++){
-    for(let c=0; c<cols; c++){
-      const s = oLat + r * grid.secLat;
-      const w = oLng + c * grid.secLng;
-      const n = s + grid.secLat;
-      const e = w + grid.secLng;
+  for(const [key, b] of Object.entries(RRC_BOUNDS)){
+    const s = b[0], w = b[1], n = b[2], e = b[3];
+    // Only draw sections that overlap the current map view
+    if(n < mapBounds.getSouth() || s > mapBounds.getNorth()) continue;
+    if(e < mapBounds.getWest() || w > mapBounds.getEast()) continue;
 
-      // Section outline
-      L.rectangle([[s,w],[n,e]],{
-        color:'rgba(245,158,11,0.35)', weight:1, fill:false,
-        dashArray:'3 4', interactive:false
-      }).addTo(sectionGridLayer);
+    L.rectangle([[s,w],[n,e]],{
+      color:'rgba(245,158,11,0.35)', weight:1, fill:false,
+      dashArray:'3 4', interactive:false
+    }).addTo(sectionGridLayer);
 
-      // Compute section number from row/col (reverse serpentine)
-      let col = c;
-      if(r % 2 === 1) col = (cols - 1) - c;
-      const secNum = r * cols + col + 1;
-
-      // Section number label
-      L.marker([(s+n)/2, (w+e)/2], {
-        icon: L.divIcon({
-          className:'',
-          html:`<div style="
-            font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:600;
-            color:rgba(245,158,11,0.55);text-align:center;
-            text-shadow:0 1px 3px rgba(0,0,0,0.9);pointer-events:none;
-            white-space:nowrap;
-          ">${secNum}</div>`,
-          iconAnchor:[8,6]
-        }),
-        interactive:false
-      }).addTo(sectionGridLayer);
-    }
+    // Section number label (from key: "Co|Survey|Block|Section")
+    const secNum = key.split('|')[3] || '';
+    L.marker([(s+n)/2, (w+e)/2], {
+      icon: L.divIcon({
+        className:'',
+        html:`<div style="
+          font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:600;
+          color:rgba(245,158,11,0.55);text-align:center;
+          text-shadow:0 1px 3px rgba(0,0,0,0.9);pointer-events:none;
+          white-space:nowrap;
+        ">${secNum}</div>`,
+        iconAnchor:[8,6]
+      }),
+      interactive:false
+    }).addTo(sectionGridLayer);
   }
 }
-// buildSectionGrid() called at init after SURVEY_GRIDS is defined
+// Rebuild grid when map moves (debounced)
+let _gridRebuildTimer = null;
 
 function toggleGrid(){
   gridVisible = !gridVisible;
@@ -880,6 +873,13 @@ function toggleGrid(){
     btn.textContent = '⊞ Grid';
   }
 }
+
+// Rebuild section grid on map move/zoom (only when grid is visible)
+map.on('moveend', ()=>{
+  if(!gridVisible) return;
+  clearTimeout(_gridRebuildTimer);
+  _gridRebuildTimer = setTimeout(()=>{ buildSectionGrid(); }, 200);
+});
 
 map.on('mousemove', e=>{
   document.getElementById('coords-bar').innerHTML =
@@ -1142,146 +1142,23 @@ function getSubdivSize(text){
 }
 
 // ===== LEGAL DESCRIPTION PARSER =====
-// Parses Texas survey legal descriptions and returns [[s,w],[n,e]] bounds.
-// Covers the major surveys in Midland, Glasscock, Upton, and Reagan counties.
-//
-// Supported formats:
-//   NW/4 Sec 25, Blk B, CCSD&RGNG Survey, Upton Co.
-//   S/2 Section 14, Block 30, T&P Survey, Midland County
-//   All of Section 7, Blk C-13, PSL Survey, Glasscock Co.
-//   SW/4 NE/4 Sec 3, Blk 33, GC&SF Survey, Reagan Co.
+// Uses official Texas RRC survey polygon data (4,394 sections across
+// Midland, Glasscock, Upton, and Reagan counties).
+// RRC_BOUNDS is loaded from rrc_bounds.js — keys are "County|Survey|Block|Section".
 
-// ── Precise section dimensions at ~31.5° N latitude ──
-// 1 mile N/S ≈ 0.01449° lat (69.0 mi/deg)
-// 1 mile E/W ≈ 0.01706° lng at 31.5°N (58.6 mi/deg, cos(31.5°) = 0.8526)
+// ── Default section dimensions at ~31.5° N latitude (for fallback sizing) ──
 const SEC_DEG_LAT = 0.01449;
 const SEC_DEG_LNG = 0.01706;
 const SEC_LAT = SEC_DEG_LAT;
 const SEC_LNG = SEC_DEG_LNG;
 
-// Survey grid anchors: {surveyKey: {origin:[lat,lng], secLat, secLng, cols, county, serpentine, layout}}
-// origin = SW corner of Section 1
-// serpentine = true for boustrophedon numbering (odd rows E, even rows W)
-const SURVEY_GRIDS = {
-  // ── UPTON COUNTY ──────────────────────────────────────────────────────
-  // CCSD&RGNG Block B — anchored to deed records Secs 25,26,27,33
-  // Back-computed: Sec 25 center ≈ 31.570, -102.060
-  //   Sec 25 in a 6-col grid: row=4, col=0 (serpentine)
-  //   origin SW = 31.570 - 4*0.01449 - 0.00725 = 31.505
-  //   origin W  = -102.060 - 0*0.01706 - 0.00853 = -102.069
-  'ccsd_b_upton': {
-    secLat: SEC_DEG_LAT, secLng: SEC_DEG_LNG,
-    origin: [31.5048, -102.0693],
-    county: 'Upton', cols: 6, serpentine: true,
-    layout(n){ return GRID_SERPENTINE(n, 6); }
-  },
-  // H&TC Survey, Upton Co. — blocks 1–38
-  'htc_upton': {
-    secLat: SEC_DEG_LAT, secLng: SEC_DEG_LNG,
-    origin: [31.2200, -102.4500],
-    county: 'Upton', cols: 8, serpentine: true,
-    layout(n){ return GRID_SERPENTINE(n, 8); }
-  },
-  // T&P Survey, Upton Co. — blocks 30–35 common
-  'tp_upton': {
-    secLat: SEC_DEG_LAT, secLng: SEC_DEG_LNG,
-    origin: [31.0900, -102.5200],
-    county: 'Upton', cols: 10, serpentine: true,
-    layout(n){ return GRID_SERPENTINE(n, 10); }
-  },
-
-  // ── MIDLAND COUNTY ────────────────────────────────────────────────────
-  // T&P Survey — most common, blocks 30–42 span the county
-  'tp_midland': {
-    secLat: SEC_DEG_LAT, secLng: SEC_DEG_LNG,
-    origin: [31.6509, -102.5000],
-    county: 'Midland', cols: 8, serpentine: true,
-    layout(n){ return GRID_SERPENTINE(n, 8); }
-  },
-  // W&NW Survey, Midland Co.
-  'wnw_midland': {
-    secLat: SEC_DEG_LAT, secLng: SEC_DEG_LNG,
-    origin: [31.7200, -102.4200],
-    county: 'Midland', cols: 8, serpentine: true,
-    layout(n){ return GRID_SERPENTINE(n, 8); }
-  },
-  // Spraberry Trend Area — uses T&P base grid
-  'spraberry_midland': {
-    secLat: SEC_DEG_LAT, secLng: SEC_DEG_LNG,
-    origin: [31.7000, -101.9000],
-    county: 'Midland', cols: 6, serpentine: true,
-    layout(n){ return GRID_SERPENTINE(n, 6); }
-  },
-
-  // ── GLASSCOCK COUNTY ──────────────────────────────────────────────────
-  // PSL Survey — blocks C-11 through C-14
-  'psl_glasscock': {
-    secLat: SEC_DEG_LAT, secLng: SEC_DEG_LNG,
-    origin: [31.6509, -101.7700],
-    county: 'Glasscock', cols: 10, serpentine: true,
-    layout(n){ return GRID_SERPENTINE(n, 10); }
-  },
-  // Block C-13 — Glasscock
-  'c13_glasscock': {
-    secLat: SEC_DEG_LAT, secLng: SEC_DEG_LNG,
-    origin: [31.7000, -101.6200],
-    county: 'Glasscock', cols: 6, serpentine: true,
-    layout(n){ return GRID_SERPENTINE(n, 6); }
-  },
-  // Howard-Glasscock Consolidated
-  'hgc_glasscock': {
-    secLat: SEC_DEG_LAT, secLng: SEC_DEG_LNG,
-    origin: [31.6800, -101.5500],
-    county: 'Glasscock', cols: 8, serpentine: true,
-    layout(n){ return GRID_SERPENTINE(n, 8); }
-  },
-
-  // ── REAGAN COUNTY ─────────────────────────────────────────────────────
-  // GC&SF Survey — blocks 33–35 common
-  'gcsf_reagan': {
-    secLat: SEC_DEG_LAT, secLng: SEC_DEG_LNG,
-    origin: [31.0822, -101.8300],
-    county: 'Reagan', cols: 10, serpentine: true,
-    layout(n){ return GRID_SERPENTINE(n, 10); }
-  },
-  // T&P Survey, Reagan Co.
-  'tp_reagan': {
-    secLat: SEC_DEG_LAT, secLng: SEC_DEG_LNG,
-    origin: [31.1100, -101.7500],
-    county: 'Reagan', cols: 10, serpentine: true,
-    layout(n){ return GRID_SERPENTINE(n, 10); }
-  },
-};
-
-// Boustrophedon (serpentine) layout — standard Texas survey numbering
-// Odd rows count east (left to right), even rows count west (right to left)
-function GRID_SERPENTINE(n, cols){
-  const i = n - 1;
-  const row = Math.floor(i / cols);
-  let col = i % cols;
-  if(row % 2 === 1) col = (cols - 1) - col; // reverse even rows
-  return [row, col];
-}
-
-// Simple east→west, south→north strip layout (fallback)
-function GRID_STRIP(n, total, cols){
-  const i = n - 1;
-  const row = Math.floor(i / cols);
-  const col = i % cols;
-  return [row, col];
-}
-
 // Subdivision fractions: returns [[sLatFrac,sLngFrac],[nLatFrac,nLngFrac]] within a section
 const SUBDIVISIONS = {
-  // Halves
   'n/2':  [[0.5,0],[1,1]], 's/2':  [[0,0],[0.5,1]],
   'e/2':  [[0,0.5],[1,1]], 'w/2':  [[0,0],[1,0.5]],
-  // Quarters
   'ne/4': [[0.5,0.5],[1,1]], 'nw/4': [[0.5,0],[1,0.5]],
   'se/4': [[0,0.5],[0.5,1]], 'sw/4': [[0,0],[0.5,0.5]],
-  // All
   'all':  [[0,0],[1,1]],
-  // Sixteenths (quarter-quarters)
   'ne/4 ne/4': [[0.75,0.75],[1,1]],   'nw/4 ne/4': [[0.75,0.5],[1,0.75]],
   'se/4 ne/4': [[0.5,0.75],[0.75,1]], 'sw/4 ne/4': [[0.5,0.5],[0.75,0.75]],
   'ne/4 nw/4': [[0.75,0.25],[1,0.5]], 'nw/4 nw/4': [[0.75,0],[1,0.25]],
@@ -1292,52 +1169,88 @@ const SUBDIVISIONS = {
   'se/4 sw/4': [[0,0.25],[0.25,0.5]], 'sw/4 sw/4': [[0,0],[0.25,0.25]],
 };
 
-// Survey name aliases → grid key
-function detectSurveyKey(text, county){
-  const t = text.toLowerCase();
-  const co = county ? county.toLowerCase() : '';
+// County abbreviation map (matches RRC_BOUNDS keys)
+const COUNTY_ABBREV = {'midland':'M','glasscock':'G','upton':'U','reagan':'R'};
+const COUNTY_FULL   = {'M':'Midland','G':'Glasscock','U':'Upton','R':'Reagan'};
 
-  // County from text if not supplied
-  const inferredCo =
-    /upton/i.test(t) ? 'upton' :
-    /midland/i.test(t) ? 'midland' :
-    /glasscock/i.test(t) ? 'glasscock' :
-    /reagan/i.test(t) ? 'reagan' : co;
+// Common survey name aliases → canonical RRC name
+const SURVEY_ALIASES = {
+  'ccsd': 'CCSD&RGNG RR CO', 'ccsd&rgng': 'CCSD&RGNG RR CO', 'rgng': 'CCSD&RGNG RR CO',
+  't&p': 'T&P RR CO', 'texas & pacific': 'T&P RR CO', 'texas pacific': 'T&P RR CO',
+  'gc&sf': 'GC&SF RR CO', 'gulf colorado': 'GC&SF RR CO', 'santa fe': 'GC&SF RR CO',
+  'h&tc': 'H&TC RR CO', 'houston texas central': 'H&TC RR CO',
+  'w&nw': 'W&NW RR CO', 'waggoner': 'W&NW RR CO',
+  'he&wt': 'HE&WT RR CO', 'mk&te': 'MK&TE RR CO',
+  'el&rr': 'EL&RR RR CO', 'l&sv': 'L&SV RR CO',
+  'd&w': 'D&W RR CO', 'c&m': 'C&M RR CO',
+  'psl': 'STATE OF TEXAS', 'public school': 'STATE OF TEXAS',
+};
 
-  // Block/Survey patterns
-  if (/cc\s*s\s*d|ccsd|rgng|r\.g\.n\.g|c\.c\.s/i.test(t)){
-    return 'ccsd_b_upton'; // only in Upton
+// Look up a section in the RRC data by trying multiple key combinations
+function lookupRRCBounds(county, survey, block, section){
+  if(!window.RRC_BOUNDS) return null;
+  const co = COUNTY_ABBREV[(county||'').toLowerCase()] || '';
+  const sec = String(section||'').trim();
+  if(!sec) return null;
+
+  // Normalize survey name
+  let surveyName = (survey||'').trim().toUpperCase();
+  const surveyLower = (survey||'').toLowerCase().replace(/\s+/g,' ').trim();
+  // Check aliases
+  for(const [alias, canonical] of Object.entries(SURVEY_ALIASES)){
+    if(surveyLower.includes(alias)){ surveyName = canonical; break; }
   }
-  if (/h\s*&\s*tc|h\.&\.t|houston.*texas.*central|htc/i.test(t)){
-    return inferredCo === 'upton' ? 'htc_upton' : null;
+
+  const blk = (block||'').trim();
+
+  // Build candidate keys to try (most specific first)
+  const candidates = [];
+  if(co && surveyName && blk) candidates.push(`${co}|${surveyName}|${blk}|${sec}`);
+  if(co && surveyName) candidates.push(`${co}|${surveyName}||${sec}`);
+
+  // If no county specified, try all counties
+  const counties = co ? [co] : ['M','G','U','R'];
+
+  for(const c of counties){
+    if(surveyName && blk) candidates.push(`${c}|${surveyName}|${blk}|${sec}`);
+    if(surveyName) candidates.push(`${c}|${surveyName}||${sec}`);
   }
-  if (/t\s*&\s*p|t\.&\.p|texas.*pacific/i.test(t)){
-    if (inferredCo === 'midland') return 'tp_midland';
-    if (inferredCo === 'upton')   return 'tp_upton';
-    if (inferredCo === 'reagan')  return 'tp_reagan';
-    return 'tp_midland'; // default
+
+  // Try each candidate
+  for(const key of candidates){
+    const b = RRC_BOUNDS[key];
+    if(b) return { bounds: [[b[0],b[1]],[b[2],b[3]]], county: COUNTY_FULL[key[0]] || county, key };
   }
-  if (/gc\s*&\s*sf|g\.c\.|gulf.*colorado|santa\s*fe/i.test(t)){
-    return 'gcsf_reagan';
+
+  // Fuzzy: if we have county + section but no survey match, scan all keys for that county+section
+  if(co && sec){
+    const suffix = `|${sec}`;
+    const prefix = `${co}|`;
+    for(const key of Object.keys(RRC_BOUNDS)){
+      if(key.startsWith(prefix) && key.endsWith(suffix)){
+        // Check block match if we have one
+        if(blk){
+          const parts = key.split('|');
+          if(parts[2] && parts[2].includes(blk)){
+            const b = RRC_BOUNDS[key];
+            return { bounds:[[b[0],b[1]],[b[2],b[3]]], county: COUNTY_FULL[co], key };
+          }
+        }
+      }
+    }
+    // Last resort: any match in this county with this section number
+    for(const key of Object.keys(RRC_BOUNDS)){
+      if(key.startsWith(prefix) && key.endsWith(suffix)){
+        const b = RRC_BOUNDS[key];
+        return { bounds:[[b[0],b[1]],[b[2],b[3]]], county: COUNTY_FULL[co], key };
+      }
+    }
   }
-  if (/psl|public\s*school/i.test(t)){
-    return 'psl_glasscock';
-  }
-  if (/c-?13|blk\s*c-?13/i.test(t)){
-    return 'c13_glasscock';
-  }
-  if (/howard.*glass|hgc/i.test(t)){
-    return 'hgc_glasscock';
-  }
-  if (/spraberry/i.test(t)){
-    return 'spraberry_midland';
-  }
-  if (/w\s*&\s*nw|waggoner/i.test(t)){
-    return 'wnw_midland';
-  }
+
   return null;
 }
 
+// Parse a free-text legal description into bounds using RRC data
 function parseLegalToBounds(desc, countyHint){
   if(!desc || desc.length < 5) return null;
   const t = desc.toLowerCase().trim();
@@ -1345,43 +1258,64 @@ function parseLegalToBounds(desc, countyHint){
   // Extract section number
   const secMatch = t.match(/(?:sec(?:tion)?\.?\s*)(\d+)/i);
   if(!secMatch) return null;
-  const secNum = parseInt(secMatch[1]);
-  if(isNaN(secNum) || secNum < 1) return null;
+  const section = secMatch[1];
 
-  // Detect survey grid
-  const surveyKey = detectSurveyKey(t, countyHint);
-  if(!surveyKey || !SURVEY_GRIDS[surveyKey]) return null;
-  const grid = SURVEY_GRIDS[surveyKey];
+  // Extract block
+  const blkMatch = t.match(/(?:bl(?:oc)?k\.?\s*)([a-z0-9\-]+(?:\s+t\d+[sn])?)/i);
+  const block = blkMatch ? blkMatch[1].trim().toUpperCase() : '';
 
-  // Calc section SW corner
-  const [row, col] = grid.layout(secNum);
-  const secS = grid.origin[0] + row * grid.secLat;
-  const secW = grid.origin[1] + col * grid.secLng; // Note: lng increases east so origin is westernmost
+  // Detect county from text or hint
+  const county =
+    /upton/i.test(t) ? 'Upton' :
+    /midland/i.test(t) ? 'Midland' :
+    /glasscock/i.test(t) ? 'Glasscock' :
+    /reagan/i.test(t) ? 'Reagan' :
+    countyHint || '';
 
-  // Extract subdivision
+  // Detect survey name from text
+  let survey = '';
+  if (/cc\s*s\s*d|ccsd|rgng/i.test(t)) survey = 'CCSD&RGNG RR CO';
+  else if (/t\s*&\s*p|texas.*pacific/i.test(t)) survey = 'T&P RR CO';
+  else if (/gc\s*&\s*sf|gulf.*colorado|santa\s*fe/i.test(t)) survey = 'GC&SF RR CO';
+  else if (/h\s*&\s*tc|houston.*texas/i.test(t)) survey = 'H&TC RR CO';
+  else if (/w\s*&\s*nw|waggoner/i.test(t)) survey = 'W&NW RR CO';
+  else if (/he\s*&\s*wt/i.test(t)) survey = 'HE&WT RR CO';
+  else if (/mk\s*&\s*te/i.test(t)) survey = 'MK&TE RR CO';
+  else if (/el\s*&\s*rr/i.test(t)) survey = 'EL&RR RR CO';
+  else if (/l\s*&\s*sv/i.test(t)) survey = 'L&SV RR CO';
+  else if (/d\s*&\s*w/i.test(t)) survey = 'D&W RR CO';
+  else if (/c\s*&\s*m/i.test(t)) survey = 'C&M RR CO';
+  else if (/psl|public\s*school/i.test(t)) survey = 'STATE OF TEXAS';
+
+  // Look up in RRC data
+  const result = lookupRRCBounds(county, survey, block, section);
+  if(!result) return null;
+
+  // Apply subdivision if present
   const normalized = t
     .replace(/section|sec\.?\s*/gi,'')
-    .replace(/block|blk\.?\s*\w+/gi,'')
+    .replace(/block|blk\.?\s*[a-z0-9\-]+/gi,'')
     .replace(/survey|co\.|county|texas|upton|midland|glasscock|reagan/gi,'')
     .replace(/,/g,' ').replace(/\s+/g,' ').trim();
 
-  let subBounds = [[0,0],[1,1]]; // default: whole section
-  // Try longest match first
+  let subFrac = [[0,0],[1,1]]; // default: whole section
   const subKeys = Object.keys(SUBDIVISIONS).sort((a,b)=>b.length-a.length);
   for(const k of subKeys){
-    if(normalized.includes(k)){
-      subBounds = SUBDIVISIONS[k];
-      break;
-    }
+    if(normalized.includes(k)){ subFrac = SUBDIVISIONS[k]; break; }
   }
 
-  const [[sLatF,sLngF],[nLatF,nLngF]] = subBounds;
-  const s = secS + sLatF * grid.secLat;
-  const n = secS + nLatF * grid.secLat;
-  const w = secW + sLngF * grid.secLng;
-  const e = secW + nLngF * grid.secLng;
+  // Apply subdivision fractions to the RRC section bounds
+  const [[secS,secW],[secN,secE]] = result.bounds;
+  const latSpan = secN - secS;
+  const lngSpan = secE - secW;
+  const [[sF,wF],[nF,eF]] = subFrac;
 
-  return { bounds:[[s,w],[n,e]], county: grid.county };
+  const s = secS + sF * latSpan;
+  const n = secS + nF * latSpan;
+  const w = secW + wF * lngSpan;
+  const e = secW + eF * lngSpan;
+
+  return { bounds:[[s,w],[n,e]], county: result.county };
 }
 
 // ── Live parse feedback in modal ──
@@ -1823,7 +1757,7 @@ function getEntityName(id){
 }
 
 // ===== INIT — start fresh =====
-// Build section grid now that SURVEY_GRIDS is defined
+// Build section grid from RRC data (will draw on first grid toggle)
 buildSectionGrid();
 
 renderAll();
@@ -2429,8 +2363,14 @@ function addInstrumentToMap(doc){
   if(doc.county) legalParts.push(doc.county + ' Co.');
   const legalDesc = legalParts.join(', ') || doc.legal_description || '';
 
-  // Try to parse bounds from the legal description
-  const parsed = legalDesc.length > 5 ? parseLegalToBounds(legalDesc, doc.county) : null;
+  // Try direct RRC lookup first (using parsed fields), then fall back to text parsing
+  let parsed = null;
+  if(doc.section){
+    parsed = lookupRRCBounds(doc.county, doc.survey, doc.block, doc.section);
+  }
+  if(!parsed && legalDesc.length > 5){
+    parsed = parseLegalToBounds(legalDesc, doc.county);
+  }
   const bounds = parsed ? parsed.bounds : null;
   const county = parsed ? parsed.county : (doc.county || 'Unknown');
 
