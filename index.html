@@ -2092,7 +2092,17 @@ function showApp(user){
     document.getElementById('user-email').textContent = user.email;
   }
   // Leaflet needs a resize kick after the container becomes visible
-  setTimeout(()=>{ map.invalidateSize(); }, 100);
+  setTimeout(()=>{
+    map.invalidateSize();
+    // Fit to all interest points, or default to full 4-county view
+    if(interests.length){
+      const pts = interests.map(i => [i.lat, i.lng]).filter(p => p[0] && p[1]);
+      if(pts.length) map.fitBounds(pts, {padding:[60,60], maxZoom:12});
+      else map.fitBounds([[31.0822,-102.5868],[32.0869,-101.1985]],{padding:[20,20]});
+    } else {
+      map.fitBounds([[31.0822,-102.5868],[32.0869,-101.1985]],{padding:[20,20]});
+    }
+  }, 150);
   loadDocuments();
 }
 
