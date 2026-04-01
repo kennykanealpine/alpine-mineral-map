@@ -2463,9 +2463,13 @@ function addInstrumentToMap(doc){
     };
     const ctr = countyCenters[doc.county];
     if(ctr){
-      lat = ctr[0]; lng = ctr[1];
-      // Quarter-section sized default box (user can edit/resize later)
-      const hLat = 0.0036, hLng = 0.0042;
+      // Count how many interests are already at this county center to offset
+      const existing = interests.filter(x => x.county === doc.county && !x._hasRealBounds).length;
+      // Small pin-sized box, offset each one so they don't stack
+      const hLat = 0.0012, hLng = 0.0014;
+      const offsetLat = (existing % 5) * 0.003;
+      const offsetLng = Math.floor(existing / 5) * 0.003;
+      lat = ctr[0] + offsetLat; lng = ctr[1] + offsetLng;
       finalBounds = [[lat - hLat, lng - hLng],[lat + hLat, lng + hLng]];
     }
     else return; // Can't place — no location info at all
@@ -2500,6 +2504,7 @@ function addInstrumentToMap(doc){
     lng: lng,
     bounds: finalBounds,
     coords: finalBounds ? boundsToCoords(finalBounds) : null,
+    _hasRealBounds: !!bounds,
     imported: true,
     label: doc.title
   });
